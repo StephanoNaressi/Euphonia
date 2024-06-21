@@ -1,15 +1,9 @@
-﻿using Avalonia.Media.Imaging;
-using Downloader.Models;
+﻿using Downloader.Models;
 using ReactiveUI;
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Text.Json;
-using System.Text.RegularExpressions;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 
@@ -23,8 +17,6 @@ public class MainViewModel : ViewModelBase
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
-
-        _client = new();
 
         if (!Directory.Exists("data"))
         {
@@ -65,9 +57,10 @@ public class MainViewModel : ViewModelBase
         DownloadCmd = ReactiveCommand.CreateFromTask(async () =>
         {
             IsDownloading = true;
+            var downloader = new SongDownloader();
             string? imagePath = CanInputAlbumUrl ? "tmpLogo.png" : null;
-            var musicPath = $"tmpMusicRaw.{AudioFormat}";
-            var normMusicPath = $"tmpMusicNorm.{AudioFormat}";
+            var musicPath = $"tmpMusicRaw.{SongDownloader.AudioFormat}";
+            var normMusicPath = $"tmpMusicNorm.{SongDownloader.AudioFormat}";
 
             // Just in case
             if (imagePath != null && File.Exists(imagePath)) File.Delete(imagePath);
@@ -81,44 +74,32 @@ public class MainViewModel : ViewModelBase
                     // Download all
                     if (CanInputAlbumUrl)
                     {
-                        using var ms = new MemoryStream();
-                        await foreach (var prog in DownloadAndFollowAsync(AlbumUrl, ms, new()))
+                        await foreach (var prog in downloader.DownloadIcon(AlbumUrl, imagePath))
                         {
                             DownloadImage = prog;
                         }
-                        ms.Position = 0;
-                        var bmp = new Bitmap(ms);
-                        bmp.Save(imagePath);
                     }
                     else
                     {
                         DownloadImage = 1f;
                     }
 
-                    await foreach (var prog in ExecuteAndFollowAsync(new("yt-dlp", $"{MusicUrl} -o {musicPath} -x --audio-format {AudioFormat} -q --progress"), (s) =>
-                    {
-                        var m = Regex.Match(s, "([0-9.]+)%");
-                        if (!m.Success) return -1f;
-                        return float.Parse(m.Groups[1].Value) / 100f;
-                    }))
+                    await foreach (var prog in downloader.DownloadMusic(MusicUrl, musicPath))
                     {
                         DownloadMusic = prog;
                     }
 
-                    await foreach (var prog in ExecuteAndFollowAsync(new("ffmpeg-normalize", $"{musicPath} -pr -ext {AudioFormat} -o {normMusicPath} -c:a libmp3lame"), (_) =>
-                    {
-                        return 0f;
-                    }))
+                    await foreach (var prog in downloader.NormalizeMusic(musicPath, normMusicPath))
                     {
                         NormalizeMusic = prog;
                     }
 
-                    var outMusicPath = CleanPath(SongName);
+                    var outMusicPath = Utils.CleanPath(SongName);
                     if (!string.IsNullOrWhiteSpace(SongType))
                     {
-                        outMusicPath += $" {SongType} by {CleanPath(Artist)}";
+                        outMusicPath += $" {SongType} by {Utils.CleanPath(Artist)}";
                     }
-                    outMusicPath += $".{AudioFormat}";
+                    outMusicPath += $".{SongDownloader.AudioFormat}";
                     var m = new Song
                     {
                         Album = string.IsNullOrWhiteSpace(AlbumName) ? null : AlbumName,
@@ -133,7 +114,7 @@ public class MainViewModel : ViewModelBase
                     _data.Musics.Add(m);
                     if (imagePath != null)
                     {
-                        File.Move(imagePath, $"data/icon/{CleanPath(AlbumName)}.png");
+                        File.Move(imagePath, $"data/icon/{Utils.CleanPath(AlbumName)}.png");
                     }
                     File.Move(musicPath, $"data/raw/{outMusicPath}");
                     File.Move(normMusicPath, $"data/normalized/{outMusicPath}");
@@ -150,77 +131,6 @@ public class MainViewModel : ViewModelBase
                 }
             });
         });
-    }
-
-    private async IAsyncEnumerable<float> ExecuteAndFollowAsync(ProcessStartInfo startInfo, Func<string, float> parseMethod)
-    {
-        startInfo.CreateNoWindow = true;
-        startInfo.RedirectStandardError = true;
-        startInfo.RedirectStandardOutput = true;
-        startInfo.UseShellExecute = false;
-
-        var p = Process.Start(startInfo);
-        p.Start();
-
-        var stdout = p.StandardOutput;
-        //var stderr = p.StandardError;
-
-        string line = stdout.ReadLine();
-        while (line != null)
-        {
-            var r = parseMethod(line);
-            if (r >= 0f)
-            {
-                yield return r;
-            }
-            line = stdout.ReadLine();
-        }
-
-        p.WaitForExit();
-        yield return 1f;
-    }
-
-    private async IAsyncEnumerable<float> DownloadAndFollowAsync(string url, Stream destination, CancellationToken token)
-    {
-        using var response = await _client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-        var contentLength = response.Content.Headers.ContentLength;
-
-        using var download = await response.Content.ReadAsStreamAsync(token);
-
-        if (!contentLength.HasValue)
-        {
-            await download.CopyToAsync(destination);
-            yield return 1f;
-        }
-        else
-        {
-            var buffer = new byte[8192];
-            float totalBytesRead = 0;
-            int bytesRead;
-            while ((bytesRead = await download.ReadAsync(buffer, 0, buffer.Length, token).ConfigureAwait(false)) != 0)
-            {
-                await destination.WriteAsync(buffer, 0, bytesRead, token).ConfigureAwait(false);
-                totalBytesRead += bytesRead;
-                yield return totalBytesRead / contentLength.Value;
-            }
-
-            yield return 1f;
-        }
-    }
-
-    private string CleanPath(string name)
-    {
-        var forbidden = new[] { '<', '>', ':', '\\', '/', '"', '|', '?', '*' };
-        foreach (var c in forbidden)
-        {
-            name = name.Replace(c.ToString(), string.Empty);
-        }
-        return name;
-    }
-
-    private bool CleanCompare(string a, string b)
-    {
-        return a.Trim().ToUpperInvariant() == b.Trim().ToUpperInvariant();
     }
 
     private void ClearAll()
@@ -242,9 +152,6 @@ public class MainViewModel : ViewModelBase
 
     private JsonExportData _data;
     private JsonSerializerOptions _jsonOptions;
-    private HttpClient _client;
-
-    private const string AudioFormat = "mp3";
 
     public ICommand DownloadCmd { get; }
 
@@ -292,7 +199,7 @@ public class MainViewModel : ViewModelBase
             {
                 CanInputAlbumUrl = false;
             }
-            else if (_data.Albums.Any(x => CleanCompare(x.Key, value)))
+            else if (_data.Albums.Any(x => Utils.CleanCompare(x.Key, value)))
             {
                 CanInputAlbumUrl = false;
             }
