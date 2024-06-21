@@ -1,4 +1,7 @@
-﻿using Downloader.Models;
+﻿using Avalonia.Media.Imaging;
+using Downloader.Models;
+using MsBox.Avalonia;
+using MsBox.Avalonia.Enums;
 using ReactiveUI;
 using System;
 using System.IO;
@@ -54,10 +57,24 @@ public class MainViewModel : ViewModelBase
 
         ClearAll();
 
-        DownloadCmd = ReactiveCommand.CreateFromTask(async () =>
+        DownloadCmd = ReactiveCommand.Create(() =>
         {
             IsDownloading = true;
             var downloader = new SongDownloader();
+
+            AlbumName = AlbumName.Trim();
+            Artist = Artist.Trim();
+            SongName = SongName.Trim();
+            MusicUrl = MusicUrl.Trim();
+            SongType = SongType.Trim();
+
+            if (_data.Musics.Any(x => x.Name == SongName && x.Artist == Artist && x.Type == SongType))
+            {
+                MessageBoxManager.GetMessageBoxStandard("Song already downloaded", $"A song of the same name, same artist and same type was already downloaded", icon: Icon.Info);
+                IsDownloading = false;
+                return;
+            }
+
             string? imagePath = CanInputAlbumUrl ? "tmpLogo.png" : null;
             var musicPath = $"tmpMusicRaw.{SongDownloader.AudioFormat}";
             var normMusicPath = $"tmpMusicNorm.{SongDownloader.AudioFormat}";
@@ -66,6 +83,7 @@ public class MainViewModel : ViewModelBase
             if (imagePath != null && File.Exists(imagePath)) File.Delete(imagePath);
             if (File.Exists(musicPath)) File.Delete(musicPath);
             if (File.Exists(normMusicPath)) File.Delete(normMusicPath);
+
 
             _ = Task.Run(async () =>
             {
@@ -94,10 +112,10 @@ public class MainViewModel : ViewModelBase
                         NormalizeMusic = prog;
                     }
 
-                    var outMusicPath = Utils.CleanPath(SongName);
+                    var outMusicPath = $"{Utils.CleanPath(SongName)}_{Utils.CleanPath(Artist)}";
                     if (!string.IsNullOrWhiteSpace(SongType))
                     {
-                        outMusicPath += $" {SongType} by {Utils.CleanPath(Artist)}";
+                        outMusicPath += $"_{SongType}";
                     }
                     outMusicPath += $".{SongDownloader.AudioFormat}";
                     var m = new Song
@@ -123,7 +141,10 @@ public class MainViewModel : ViewModelBase
                 }
                 catch (Exception e)
                 {
-                    throw;
+                    DownloadImage = 0f;
+                    DownloadMusic = 0f;
+                    NormalizeMusic = 0f;
+                    MessageBoxManager.GetMessageBoxStandard("Download failed", $"An error occurred while downloading your music: {e.Message}", icon: Icon.Error);
                 }
                 finally
                 {
